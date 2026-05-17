@@ -3,7 +3,7 @@
 cd "$(dirname "$0")"
 
 # CAUTION: this script will replace every occurrence of the word
-# `cc-tools-demo` in the project folder with whatever argument
+# `fabricWebAuth` in the project folder with whatever argument
 # you pass. Be very careful.
 
 if [ $# -lt 1 ] ; then
@@ -11,4 +11,4 @@ if [ $# -lt 1 ] ; then
   exit
 fi
 
-grep -rl cc-tools-demo ../ --exclude-dir={.git,node_modules} | xargs sed -i s/cc-tools-demo/$1/g
+grep -rl fabricWebAuth ../ --exclude-dir={.git,node_modules} | xargs sed -i s/fabricWebAuth/$1/g

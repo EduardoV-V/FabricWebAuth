@@ -6,7 +6,7 @@ FLAG_LABEL="1.0"
 SKIP_COLL_GEN=false
 
 # You can change this if you want to avoid using the --name flag
-FLAG_NAME="cc-tools-demo"
+FLAG_NAME="fabricWebAuth"
 
 # Process command-line arguments
 while [[ $# -gt 0 ]]; do

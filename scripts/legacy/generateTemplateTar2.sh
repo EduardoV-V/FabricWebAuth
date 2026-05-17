@@ -15,7 +15,7 @@ tar \
 --exclude=src/assettypes/customAssets.go \
 --exclude=src/collections.json \
 --exclude=src/header/header.go \
--czf cc-tools-demo.tar.gz src
+-czf fabricWebAuth.tar.gz src
 
 # Compress file with rest-server
 # GoFabric will use the one provided
@@ -26,7 +26,7 @@ tar \
 # --exclude=src/assettypes/customAssets.go \
 # --exclude=src/collections.json \
 # --exclude=src/header/header.go \
-# -czf cc-tools-demo.tar.gz src -C tmp rest-server
+# -czf fabricWebAuth.tar.gz src -C tmp rest-server
 # rm -rf tmp
 
 

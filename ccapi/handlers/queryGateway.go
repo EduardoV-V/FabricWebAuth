@@ -7,8 +7,8 @@ import (
 	"os"
 
 	"github.com/gin-gonic/gin"
-	"github.com/hyperledger-labs/cc-tools-demo/ccapi/chaincode"
-	"github.com/hyperledger-labs/cc-tools-demo/ccapi/common"
+	"github.com/hyperledger-labs/fabricWebAuth/ccapi/chaincode"
+	"github.com/hyperledger-labs/fabricWebAuth/ccapi/common"
 )
 
 func QueryGatewayDefault(c *gin.Context) {

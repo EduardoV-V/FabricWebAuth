@@ -97,7 +97,7 @@ else
   fi
 fi 
 
-docker network create cc-tools-demo-net 2>/dev/null || true
+docker network create fabricWebAuth-net 2>/dev/null || true
 
 if [ "$USE_OLD" = true ]; then
   echo "Subindo rede existente (sem createChannel)..."

@@ -6,14 +6,16 @@ const crypto = require('node:crypto');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { TextDecoder } = require('node:util');
-const { p256 } = require('@noble/curves/nist.js');
+const { p256 } = require('@noble/curves/p256');
+
+const invoke = require('../resources/invoke.js');
+const normalizeS = require('../resources/normalization.js')
 
 const channelName = 'mainchannel';
 const chaincodeName = 'teste_chaincode';
 const mspId = 'org1MSP';
 
-const cryptoPath = path.resolve(__dirname, '..', 'fabric', 'organizations', 'peerOrganizations', 'org1.example.com');
-
+const cryptoPath = path.resolve(__dirname, '..', '..', 'fabric', 'organizations', 'peerOrganizations', 'org1.example.com');
 const keyDirectoryPath = path.resolve(cryptoPath, 'users', 'User1@org1.example.com', 'msp', 'keystore');
 const certDirectoryPath = path.resolve(cryptoPath, 'users', 'User1@org1.example.com', 'msp', 'signcerts');
 const tlsCertPath = path.resolve(cryptoPath, 'peers', 'peer0.org1.example.com', 'tls', 'ca.crt');
@@ -73,13 +75,57 @@ async function saveResults(mode, results) {
     console.log(`Resultados salvos em:\n  ${csvPath}\n  ${jsonPath}`);
 }
 
+function derToRaw(derSignature) {
+    const der = Buffer.from(derSignature);
+    if (der[0] !== 0x30) throw new Error('Assinatura DER inválida: esperado 0x30');
+
+    let pos = 2;
+    const len = der[1];
+    if (len & 0x80) {
+        const numBytes = len & 0x7f;
+        pos += numBytes; // pular os bytes do tamanho longo
+    }
+
+    if (der[pos] !== 0x02) throw new Error('Esperado 0x02 para R');
+    pos++;
+    const rLen = der[pos];
+    pos++;
+    let r = der.slice(pos, pos + rLen);
+    // Remover possível byte 0x00 inicial (indicador de sinal)
+    if (r[0] === 0x00 && r.length > 32) {
+        r = r.slice(1);
+    }
+    pos += rLen;
+
+    if (der[pos] !== 0x02) throw new Error('Esperado 0x02 para S');
+    pos++;
+    const sLen = der[pos];
+    pos++;
+    let s = der.slice(pos, pos + sLen);
+    if (s[0] === 0x00 && s.length > 32) {
+        s = s.slice(1);
+    }
+    pos += sLen;
+
+    // Garantir 32 bytes cada
+    if (r.length < 32) r = Buffer.concat([Buffer.alloc(32 - r.length, 0), r]);
+    if (s.length < 32) s = Buffer.concat([Buffer.alloc(32 - s.length, 0), s]);
+
+    // Devem ter exatamente 32 bytes cada
+    if (r.length !== 32) throw new Error(`R length ${r.length} != 32`);
+    if (s.length !== 32) throw new Error(`S length ${s.length} != 32`);
+
+    return Buffer.concat([r, s]); // 64 bytes
+}
+
 function signDigest(digest, privateKey) {
     const sign = crypto.createSign('SHA256');
     sign.update(digest);
     sign.end();
     const derSignature = sign.sign(privateKey);
-    const sig = p256.Signature.fromDER(derSignature);
-    return sig.normalizeS().toDERRawBytes();
+    const rawSignature = derToRaw(derSignature);
+    const normalizedDER = normalizeS(rawSignature)
+    return normalizedDER;
 }
 
 async function loadPrivateKey() {
@@ -92,15 +138,17 @@ async function loadPublicKeyPem() {
 }
 
 async function loadWalletCertificate(user) {
-    const walletPath = path.join(__dirname, 'benchmark', 'wallet');
-    const certDir = path.join(walletPath, user, 'signcerts');
-    const certFile = await getFirstDirFileName(certDir);
-    return fs.readFile(certFile, 'utf8');
+    const identityPath = path.join(__dirname, 'wallet', `${user}.id`);
+    const identityData = JSON.parse(await fs.readFile(identityPath, 'utf8'));
+    return identityData.credentials.certificate;
 }
 
 async function benchmarkSigned(contract, iterations) {
     const publicKeyPem = await loadPublicKeyPem();
     const privateKey = await loadPrivateKey();
+
+    await contract.submitTransaction('StoreUserPubKey', publicKeyPem);
+    console.log('Chave pública armazenada.');
 
     const results = [];
     for (let i = 0; i < iterations; i++) {
@@ -167,20 +215,12 @@ async function benchmarkUnsigned(contract, iterations) {
     await saveResults('unsigned', results);
 }
 
-async function benchmarkOffline(contract, iterations, user) {
+async function benchmarkOffline(iterations, user) {
     const certificate = await loadWalletCertificate(user);
+    const privateKey = await loadPrivateKey();
 
-    const tlsRootCert = await fs.readFile(tlsCertPath);
-    const client = new grpc.Client(peerEndpoint, grpc.credentials.createSsl(tlsRootCert), {
-        'grpc.ssl_target_name_override': peerHostAlias,
-    });
-    const gateway = connect({
-        identity: { mspId, credentials: utf8Encoder.encode(certificate) },
-        hash: hash.none,
-        client
-    });
-    const network = gateway.getNetwork(channelName);
-    const contractOffline = network.getContract(chaincodeName);
+    // Inicializa a sessão usando o módulo invoke
+    invoke.initialize(user, chaincodeName, certificate);
 
     const results = [];
     for (let i = 0; i < iterations; i++) {
@@ -189,44 +229,33 @@ async function benchmarkOffline(contract, iterations, user) {
         const storageKey = `offline_${i}`;
         const message = `Teste offline #${i} - ${Date.now()}`;
 
-        const unsignedProposal = contractOffline.newProposal('Store', {
-            arguments: [storageKey, message],
-        });
-        const proposalBytes = unsignedProposal.getBytes();
-        const proposalDigest = Buffer.from(unsignedProposal.getDigest());
-
-        const privateKey = await loadPrivateKey();
+        // 1. Proposta
+        const proposalDigest = await invoke.createProposal('Store', storageKey, message);
         const proposalSig = signDigest(proposalDigest, privateKey);
 
         const clienteMs = parseFloat((performance.now() - iterationStart).toFixed(4));
 
-        const signedProposal = gateway.newSignedProposal(proposalBytes, proposalSig);
-        const unsignedTransaction = await signedProposal.endorse();
-        const transactionBytes = unsignedTransaction.getBytes();
-        const transactionDigest = Buffer.from(unsignedTransaction.getDigest());
+        // 2. Transação (endosso)
+        const transactionDigest = await invoke.createTransaction(proposalSig);
         const transactionSig = signDigest(transactionDigest, privateKey);
 
-        const signedTransaction = gateway.newSignedTransaction(transactionBytes, transactionSig);
-        const unsignedCommit = await signedTransaction.submit();
-        const commitBytes = unsignedCommit.getBytes();
-        const commitDigest = Buffer.from(unsignedCommit.getDigest());
+        // 3. Commit
+        const commitDigest = await invoke.createCommit(transactionSig);
         const commitSig = signDigest(commitDigest, privateKey);
 
-        const signedCommit = gateway.newSignedCommit(commitBytes, commitSig);
-        const result = signedTransaction.getResult();
+        // 4. Finalização e resultado
+        const resultJson = await invoke.finalize(commitSig);
 
         let chaincodeMs = 0;
-        if (result && result.length > 0) {
-            try {
-                const parsed = JSON.parse(utf8Decoder.decode(Buffer.from(result)));
-                chaincodeMs = parsed.elapsed_ms || 0;
-            } catch {}
+        if (resultJson && resultJson.elapsed_ms) {
+            chaincodeMs = resultJson.elapsed_ms;
         }
 
         const totalMs = parseFloat((clienteMs + chaincodeMs).toFixed(4));
         console.log(`[${i}] cliente=${clienteMs}ms, chaincode=${chaincodeMs}ms, total=${totalMs}ms`);
 
-        const queryResult = await contractOffline.evaluateTransaction('Query', storageKey);
+        // Query para verificação
+        const queryResult = await invoke.contract.evaluateTransaction('Query', storageKey);
         const match = utf8Decoder.decode(queryResult) === message;
         console.log(`[${i}] Query match: ${match}`);
 
@@ -236,27 +265,24 @@ async function benchmarkOffline(contract, iterations, user) {
         console.log('---');
     }
 
-    gateway.close();
-    client.close();
+    invoke.close();
     await saveResults('offline', results);
 }
 
 async function main() {
     const iterations = parseInt(process.argv[2], 10) || 5;
     const mode = (process.argv[3] || 'signed').toLowerCase();
-    const offlineUser = 'user1';
+    const offlineUser = 'teste1';
 
     console.log(`Modo: ${mode}`);
     console.log(`Iterações: ${iterations}`);
 
     if (mode === 'offline') {
         console.log(`Usuário da wallet: ${offlineUser}`);
-        const contract = null; // não usado diretamente, a função recria a conexão
-        await benchmarkOffline(contract, iterations, offlineUser);
+        await benchmarkOffline(iterations, offlineUser);
         return;
     }
 
-    // Modos signed/unsigned usam a conexão padrão
     const client = await newGrpcConnection();
     const gateway = connect({
         client,

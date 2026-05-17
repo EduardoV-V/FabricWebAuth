@@ -13,7 +13,6 @@ const upload = multer({ dest: 'uploads/' });
 
 // Modulos da rede Fabric
 const { registerWithSupabase } = require('./resources/register.js');
-const { getUserByUsername, verifyPassword, getCertificateByUserId } = require('./resources/supabase.js');
 const normalizeS = require('./resources/normalization.js');
 const {
   initialize,
@@ -46,7 +45,7 @@ app.use(express.static(path.join(__dirname, 'views')));
 // JWT
 // ---------------------------------------------------------------------------
 
-const JWT_SECRET = process.env.JWT_SECRET || 'sollytch-dev-secret';
+const JWT_SECRET = process.env.JWT_SECRET || 'fabric-dev-secret';
 
 function authRequired(req, res, next) {
   const header = req.headers['authorization'] || '';
@@ -96,18 +95,14 @@ app.get('/register', (req, res) => {
 // ---------------------------------------------------------------------------
 
 app.post('/auth/register', async (req, res) => {
-  const { username, password, privateKey } = req.body;
+  const { username, csr } = req.body;
 
-  if (!username || !password) {
-    return res.status(400).json({ error: 'username e password sao obrigatorios' });
-  }
-
-  if (password.length < 6) {
-    return res.status(400).json({ error: 'Senha deve ter pelo menos 6 caracteres' });
+  if (!username || !csr) {
+    return res.status(400).json({ error: 'username e csr sao obrigatorios' });
   }
 
   try {
-    await registerWithSupabase(username, password, privateKey || null);
+    await register(username, csr);
     res.json({ message: `Usuario ${username} registrado com sucesso` });
   } catch (err) {
     console.error('Erro no registro:', err);
@@ -115,28 +110,27 @@ app.post('/auth/register', async (req, res) => {
   }
 });
 
-app.post('/auth/login', async (req, res) => {
-  const { username, password } = req.body;
+app.post('/auth/challenge', (req, res) => {
+  const { username } = req.body;
 
-  if (!username || !password) {
-    return res.status(400).json({ error: 'username e password sao obrigatorios' });
+  if (!username) return res.status(400).json({ error: 'username e obrigatorio' });
+
+  const challenge = generateChallenge();
+  activeChallenges.set(username, challenge);
+
+  res.json({ nonce: challenge.nonce });
+});
+
+app.post('/auth/login', async (req, res) => {
+  const { username, signature } = req.body;
+
+  if (!username || !signature) {
+    return res.status(400).json({ error: 'username e signature sao obrigatorios' });
   }
 
   try {
-    const user = await getUserByUsername(username);
-    if (!user) {
-      return res.status(401).json({ error: 'Usuario nao encontrado' });
-    }
-
-    const valid = await verifyPassword(user, password);
-    if (!valid) {
-      return res.status(401).json({ error: 'Senha invalida' });
-    }
-
-    const token = jwt.sign({ sub: user.id, username: user.username }, JWT_SECRET, {
-      expiresIn: process.env.JWT_EXPIRES || '1h'
-    });
-
+    const sigBuffer = Buffer.from(signature);
+    const { token } = await verifySignature(username, sigBuffer);
     res.json({ token });
   } catch (err) {
     console.error('Erro no login:', err);

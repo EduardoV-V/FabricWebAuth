@@ -4,7 +4,7 @@
 #
 
 networks:
-  cc-tools-demo-net:
+  fabricWebAuth-net:
     external: true
 
 services:
@@ -21,7 +21,7 @@ services:
     ports:
       - "5984:5984"
     networks:
-      - cc-tools-demo-net
+      - fabricWebAuth-net
 
   peer0.org.example.com:
     environment:

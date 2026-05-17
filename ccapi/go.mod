@@ -1,4 +1,4 @@
-module github.com/hyperledger-labs/cc-tools-demo/ccapi
+module github.com/hyperledger-labs/fabricWebAuth/ccapi
 
 go 1.21
 

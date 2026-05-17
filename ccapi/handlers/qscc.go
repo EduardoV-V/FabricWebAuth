@@ -6,8 +6,8 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
-	"github.com/hyperledger-labs/cc-tools-demo/ccapi/chaincode"
-	"github.com/hyperledger-labs/cc-tools-demo/ccapi/common"
+	"github.com/hyperledger-labs/fabricWebAuth/ccapi/chaincode"
+	"github.com/hyperledger-labs/fabricWebAuth/ccapi/common"
 	protos "github.com/hyperledger/fabric-protos-go-apiv2/common"
 	queryresultprotos "github.com/hyperledger/fabric-protos-go-apiv2/ledger/queryresult"
 	rwsetprotos "github.com/hyperledger/fabric-protos-go-apiv2/ledger/rwset"

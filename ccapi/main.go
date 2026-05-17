@@ -8,8 +8,8 @@ import (
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
-	"github.com/hyperledger-labs/cc-tools-demo/ccapi/chaincode"
-	"github.com/hyperledger-labs/cc-tools-demo/ccapi/server"
+	"github.com/hyperledger-labs/fabricWebAuth/ccapi/chaincode"
+	"github.com/hyperledger-labs/fabricWebAuth/ccapi/server"
 	"github.com/hyperledger/fabric-sdk-go/pkg/common/providers/fab"
 )
 

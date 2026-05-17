@@ -10,7 +10,7 @@ fabric/organizations/fabric-ca
 chaincode/vendor/*
 chaincode/collections.json
 ccapi/vendor/*
-cc-tools-demo.tar.gz
+fabricWebAuth.tar.gz
 package-lock.json
 client/uploads/
 client/benchmarks/*

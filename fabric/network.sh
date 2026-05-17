@@ -277,10 +277,10 @@ function createOrgs() {
 
     infoln "Generating CCP files for Org1 and Org2"
     ./organizations/ccp-generate.sh
+
     infoln "Gerando CCP para Org3"
-    infoln "????????????????????????????????????????????????????????????????????????????????"
     ./addOrg3/ccp-generate.sh
-    infoln "????????????????????????????????????????????????????????????????????????????????"
+    
   else
     while :
       do
@@ -334,14 +334,14 @@ function generateCCAASCerts() {
   infoln "Creating CC CA certs"
   mkdir -p $cc_certs_base_path/ca
   openssl genrsa 2048 > $cc_certs_base_path/ca/key.pem
-  openssl req -new -x509 -nodes -key $cc_certs_base_path/ca/key.pem -out $cc_certs_base_path/ca/cert.pem -subj "/C=US/ST=California/L=San Francisco/O=${org}.example.com Inc/OU=Developer/CN=cc-tools-demo.${org}.example.com"
+  openssl req -new -x509 -nodes -key $cc_certs_base_path/ca/key.pem -out $cc_certs_base_path/ca/cert.pem -subj "/C=US/ST=California/L=San Francisco/O=${org}.example.com Inc/OU=Developer/CN=fabricWebAuth.${org}.example.com"
 
-  echo subjectAltName=DNS:cc-tools-demo.${org}.example.com > $cc_certs_base_path/subj.cnf
+  echo subjectAltName=DNS:fabricWebAuth.${org}.example.com > $cc_certs_base_path/subj.cnf
 
   # CC Server certs
   infoln "Creating CC Server certs"
   mkdir -p $cc_certs_base_path/server
-  openssl req -newkey rsa:2048 -nodes -keyout $cc_certs_base_path/server/key.pem -out $cc_certs_base_path/server/req.pem -subj "/C=US/ST=California/L=San Francisco/O=${org}.example.com Inc/OU=Developer/CN=cc-tools-demo.${org}.example.com"
+  openssl req -newkey rsa:2048 -nodes -keyout $cc_certs_base_path/server/key.pem -out $cc_certs_base_path/server/req.pem -subj "/C=US/ST=California/L=San Francisco/O=${org}.example.com Inc/OU=Developer/CN=fabricWebAuth.${org}.example.com"
 
   openssl x509 -req  -set_serial 01 -in $cc_certs_base_path/server/req.pem -extfile $cc_certs_base_path/subj.cnf -out $cc_certs_base_path/server/cert.pem \
   -CA $cc_certs_base_path/ca/cert.pem -CAkey $cc_certs_base_path/ca/key.pem

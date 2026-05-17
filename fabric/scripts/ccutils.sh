@@ -185,7 +185,7 @@ buildDockerImages() {
 startDockerContainer() {
   # start the docker container
   if [ "$CCAAS_DOCKER_RUN" = "true" ]; then
-    WORKDIR_CC=/go/src/github.com/goledgerdev/cc-tools-demo
+    WORKDIR_CC=/go/src/github.com/goledgerdev/fabricWebAuth
     infoln "Starting the Chaincode-as-a-Service docker container..."
 
     if [ $ORG_QNTY -gt 1 ] ; then
@@ -193,7 +193,7 @@ startDockerContainer() {
       set -x
       ${CONTAINER_CLI} rm -f ${CC_NAME}.org1.example.com
       ${CONTAINER_CLI} run -d --name ${CC_NAME}.org1.example.com \
-                    --network cc-tools-demo-net \
+                    --network fabricWebAuth-net \
                     -e CHAINCODE_SERVER_ADDRESS=0.0.0.0:9999 \
                     -e CHAINCODE_ID=$PACKAGE_ID -e CORE_CHAINCODE_ID_NAME=$PACKAGE_ID \
                     -e RUN_CCAAS=true -e TLS_ENABLED=$CCAAS_TLS_ENABLED \
@@ -208,7 +208,7 @@ startDockerContainer() {
       set -x
       ${CONTAINER_CLI} rm -f ${CC_NAME}.org2.example.com
       ${CONTAINER_CLI} run -d --name ${CC_NAME}.org2.example.com \
-                    --network cc-tools-demo-net \
+                    --network fabricWebAuth-net \
                     -e CHAINCODE_SERVER_ADDRESS=0.0.0.0:9998 \
                     -e CHAINCODE_ID=$PACKAGE_ID -e CORE_CHAINCODE_ID_NAME=$PACKAGE_ID \
                     -e RUN_CCAAS=true -e TLS_ENABLED=$CCAAS_TLS_ENABLED \
@@ -223,7 +223,7 @@ startDockerContainer() {
       set -x
       ${CONTAINER_CLI} rm -f ${CC_NAME}.org3.example.com
       ${CONTAINER_CLI} run -d --name ${CC_NAME}.org3.example.com \
-                    --network cc-tools-demo-net \
+                    --network fabricWebAuth-net \
                     -e CHAINCODE_SERVER_ADDRESS=0.0.0.0:9997 \
                     -e CHAINCODE_ID=$PACKAGE_ID -e CORE_CHAINCODE_ID_NAME=$PACKAGE_ID \
                     -e RUN_CCAAS=true -e TLS_ENABLED=$CCAAS_TLS_ENABLED \
@@ -239,7 +239,7 @@ startDockerContainer() {
       set -x
       ${CONTAINER_CLI} rm -f ${CC_NAME}.org.example.com
       ${CONTAINER_CLI} run -d --name ${CC_NAME}.org.example.com \
-                    --network cc-tools-demo-net \
+                    --network fabricWebAuth-net \
                     -e CHAINCODE_SERVER_ADDRESS=0.0.0.0:${CCAAS_SERVER_PORT} \
                     -e CHAINCODE_ID=$PACKAGE_ID -e CORE_CHAINCODE_ID_NAME=$PACKAGE_ID \
                     -e RUN_CCAAS=true -e TLS_ENABLED=$CCAAS_TLS_ENABLED \
@@ -258,27 +258,27 @@ startDockerContainer() {
     infoln "Not starting docker containers; these are the commands we would have run"
     if [ $ORG_QNTY -gt 1 ] ; then
       infoln "    ${CONTAINER_CLI} run --rm -d --name peer0.org1_${CC_NAME}_ccaas  \
-                  --network cc-tools-demo-net \
+                  --network fabricWebAuth-net \
                   -e CHAINCODE_SERVER_ADDRESS=0.0.0.0:${CCAAS_SERVER_PORT} \
                   -e CHAINCODE_ID=$PACKAGE_ID -e CORE_CHAINCODE_ID_NAME=$PACKAGE_ID \
                   -e RUN_CCAAS=true \
                     ${CC_NAME}_ccaas_image:latest"
       infoln "    ${CONTAINER_CLI} run --rm -d --name peer0.org2_${CC_NAME}_ccaas  \
-                    --network cc-tools-demo-net \
+                    --network fabricWebAuth-net \
                     -e CHAINCODE_SERVER_ADDRESS=0.0.0.0:${CCAAS_SERVER_PORT} \
                     -e CHAINCODE_ID=$PACKAGE_ID -e CORE_CHAINCODE_ID_NAME=$PACKAGE_ID \
                     -e RUN_CCAAS=true \
                       ${CC_NAME}_ccaas_image:latest"
       
       infoln "    ${CONTAINER_CLI} run --rm -d --name peer0.org3_${CC_NAME}_ccaas  \
-                    --network cc-tools-demo-net \
+                    --network fabricWebAuth-net \
                     -e CHAINCODE_SERVER_ADDRESS=0.0.0.0:${CCAAS_SERVER_PORT} \
                     -e CHAINCODE_ID=$PACKAGE_ID -e CORE_CHAINCODE_ID_NAME=$PACKAGE_ID \
                     -e RUN_CCAAS=true \
                       ${CC_NAME}_ccaas_image:latest"
     else
       infoln "    ${CONTAINER_CLI} run --rm -d --name peer0.org_${CC_NAME}_ccaas  \
-                    --network cc-tools-demo-net \
+                    --network fabricWebAuth-net \
                     -e CHAINCODE_SERVER_ADDRESS=0.0.0.0:${CCAAS_SERVER_PORT} \
                     -e CHAINCODE_ID=$PACKAGE_ID -e CORE_CHAINCODE_ID_NAME=$PACKAGE_ID \
                     -e RUN_CCAAS=true \

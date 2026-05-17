@@ -24,7 +24,7 @@ while [[ $# -ge 1 ]] ; do
         -c )
             SKIP_COLL_GEN=true
             ;;
-        old )
+        -old )
             USE_OLD=true
             ;;
   esac

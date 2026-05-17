@@ -1,90 +1,100 @@
 // Importa bibliotecas do Hyperledger Fabric, Node.js e terceiros
-const { Wallets } = require('fabric-network');
-const crypto = require('crypto');
-const path   = require('path');
-const jwt    = require('jsonwebtoken');
+const { Wallets } = require('fabric-network');  // Para acessar identidades na wallet
+const crypto = require('crypto');               // Para geração e verificação criptográfica
+const fs = require('fs');
+const path = require('path');
+const jwt = require('jsonwebtoken');            // Para geração de tokens JWT
+const forge = require('node-forge');            // Para manipulação de certificados X.509
 
-// Mapa em memoria para armazenar nonces temporarios (uso unico, expira em 5 min)
+// 1. Gerenciamento de desafios: mapa em memória para armazenar nonces temporários
 const activeChallenges = new Map();
 
 /**
- * Gera um novo desafio de autenticacao para o usuario.
- * Retorna um nonce aleatorio (hex) e o timestamp de expiracao.
+ * Gera um novo desafio de autenticação para o usuário.
+ * Um desafio é um nonce aleatório válido por 5 minutos.
  */
 function generateChallenge() {
-    const nonce     = crypto.randomBytes(32).toString('hex');
-    const expiresAt = Date.now() + 300000; // 5 minutos
+    const nonce = crypto.randomBytes(32).toString('hex'); // Gera 32 bytes aleatórios em hex
+    const expiresAt = Date.now() + 300000; // Validade: 5 minutos (300.000 ms)
     return { nonce, expiresAt };
 }
 
 /**
- * Verifica uma assinatura ECDSA DER recebida do frontend.
- *
- * O frontend (login.html via jsrsasign) assina a string hex do nonce com
- * SHA256withECDSA e produz uma assinatura em DER. O backend faz o mesmo
- * hash (SHA-256 da string hex do nonce) e verifica com a chave publica
- * EC extraida do certificado X.509 da wallet.
- *
- * Usa crypto.verify() com dsaEncoding em der para suportar chaves EC PKCS8.
- *
- * @param {string}            username     - Nome do usuario
- * @param {Buffer|Uint8Array} signatureDER - Assinatura recebida em formato DER
- * @returns {{ token: string }}
+ * Verifica uma assinatura DER recebida, comparando com o desafio salvo.
+ * 
+ * Fluxo:
+ * - Verifica parâmetros de entrada.
+ * - Recupera o desafio salvo para o usuário.
+ * - Busca o certificado do usuário na wallet.
+ * - Extrai a chave pública do certificado.
+ * - Verifica se a assinatura DER é válida para o nonce.
+ * - Se for válida, emite um JWT.
+ * - Remove o desafio (uso único).
+ * 
+ * @param {string} username - Nome de usuário
+ * @param {Buffer|Uint8Array} signatureDER - Assinatura recebida em DER
+ * @returns {Object} - Um objeto com o JWT emitido
  */
 async function verifySignature(username, signatureDER) {
     try {
+        // Validação básica dos parâmetros de entrada
         if (!username || !signatureDER) {
-            throw new Error('Parametros invalidos');
+            throw new Error('Parâmetros inválidos');
         }
 
-        // Recupera e valida o desafio ativo
+        // Recupera o desafio ativo do mapa
         const challenge = activeChallenges.get(username);
         if (!challenge || Date.now() > challenge.expiresAt) {
             throw new Error('Desafio expirado ou inexistente');
         }
 
-        // Busca identidade na wallet
-        const walletPath = path.join(process.cwd(), 'wallet');
-        const wallet     = await Wallets.newFileSystemWallet(walletPath);
-        const identity   = await wallet.get(username);
+        // Monta caminho da wallet local (padrão INMETROMSP)
+        const walletPath = path.join(process.cwd(), 'wallet', 'INMETROMSP');
+        const wallet = await Wallets.newFileSystemWallet(walletPath);
+        const identity = await wallet.get(username);
 
         if (!identity) {
-            throw new Error('Identidade nao encontrada');
+            throw new Error('Identidade não encontrada');
         }
 
-        // Extrai chave publica EC do certificado X.509 via jsrsasign
-        const certObj = KEYUTIL.getKey(identity.credentials.certificate);
+        // Converte certificado PEM para objeto de chave pública usando forge
+        const cert = forge.pki.certificateFromPem(identity.credentials.certificate);
+        const publicKey = forge.pki.publicKeyToPem(cert.publicKey);
 
-        const sig = new KJUR.crypto.Signature({ alg: 'SHA256withECDSA' });
-        sig.init(certObj);
-        sig.updateString(challenge.nonce);
+        // Cria um verificador com SHA256 e alimenta com o nonce
+        const verifier = crypto.createVerify('SHA256');
+        verifier.update(challenge.nonce);
 
-        const isValid = sig.verify(Buffer.from(signatureDER).toString('hex'));
+        // Verifica a assinatura recebida (em formato DER)
+        const isValid = verifier.verify(
+            { key: publicKey, format: 'pem', type: 'spki' },
+            signatureDER,
+            'der'
+        );
 
-        // Descarta o desafio (uso unico)
+        // Remove o desafio para evitar reutilização
         activeChallenges.delete(username);
 
         if (!isValid) {
-            throw new Error('Assinatura invalida');
+            throw new Error('Assinatura inválida');
         }
 
-        // Emite token valido por 1 hora
+        // Gera e retorna um token JWT válido por 1 hora
         const token = jwt.sign(
             { sub: username },
-            process.env.JWT_SECRET || 'sollytch-dev-secret', // Secret temporário, NÃO USAR COMO ESTÁ
-            { expiresIn: '1h', algorithm: 'HS256' }
+            process.env.JWT_SECRET,
+            { expiresIn: '5h', algorithm: 'HS256' }
         );
 
         return { token };
-
     } catch (error) {
-        console.error('Falha na verificacao:', error);
+        console.error('Falha na verificação:', error);
         throw error;
     }
 }
 
+// Exporta as funções para uso em outras partes da aplicação
 module.exports = {
-    generateChallenge,
-    verifySignature,
-    activeChallenges
+    generateChallenge, // Gera um novo nonce + timestamp de expiração
+    verifySignature,   // Verifica assinatura DER e emite JWT
 };

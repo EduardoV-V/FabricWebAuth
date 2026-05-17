@@ -1,19 +1,22 @@
 'use strict';
 
-const express    = require('express');
-const bodyParser = require('body-parser');
-const cors       = require('cors');
-const path       = require('path');
-const crypto     = require('crypto');
-const multer     = require('multer');
-const jwt        = require('jsonwebtoken');
-const fsRead     = require('fs');
+// ==================== IMPORTS ====================
+const express        = require('express');
+const bodyParser     = require('body-parser');
+const cors           = require('cors');
+const path           = require('path');
+const crypto         = require('crypto');
+const jwt            = require('jsonwebtoken');
+const multer         = require('multer');
+const fs             = require('fs');
+const { KJUR, KEYUTIL } = require('jsrsasign');
+const { Wallets }    = require('fabric-network');
 
-const upload = multer({ dest: 'uploads/' });
-
-// Modulos da rede Fabric
-const { registerWithSupabase } = require('./resources/register.js');
-const normalizeS = require('./resources/normalization.js');
+// Módulos internos
+const normalizeS       = require('./resources/normalization.js');
+const register         = require('./resources/register.js');
+const standaloneClient = require('./resources/standaloneClient.js');
+const { generateChallenge, verifySignature, activeChallenges } = require('./resources/verify.js');
 const {
   initialize,
   createProposal,
@@ -23,266 +26,345 @@ const {
   close
 } = require('./resources/invoke.js');
 
-// Modulo standalone (sem autenticacao por chave do usuario)
-const standaloneClient = require('./resources/standalone_client.js');
+// ==================== CONFIGURAÇÕES ====================
+const app       = express();
+const PORT      = 3000;
+const MSP_ID    = 'org1MSP';
+const CHAINCODE = 'teste_chaincode';
+const WALLET_PATH = path.join(process.cwd(), 'wallet');
 
-const app  = express();
-const PORT = 3000;
-
-// ---------------------------------------------------------------------------
 // Middleware
-// ---------------------------------------------------------------------------
-
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 app.use(bodyParser.json());
-
 app.use('/resources', express.static(path.join(__dirname, 'resources')));
 app.use(express.static(path.join(__dirname, 'views')));
 
-// ---------------------------------------------------------------------------
-// JWT
-// ---------------------------------------------------------------------------
-
+// ==================== JWT ====================
 const JWT_SECRET = process.env.JWT_SECRET || 'fabric-dev-secret';
 
 function authRequired(req, res, next) {
   const header = req.headers['authorization'] || '';
   const token  = header.startsWith('Bearer ') ? header.slice(7) : null;
-
   if (!token) return res.status(401).json({ error: 'Token ausente' });
-
   try {
     req.user = jwt.verify(token, JWT_SECRET);
     next();
   } catch {
-    return res.status(401).json({ error: 'Token invalido ou expirado' });
+    return res.status(401).json({ error: 'Token inválido ou expirado' });
   }
 }
 
-// ---------------------------------------------------------------------------
-// Sessoes de transacao em andamento
-// ---------------------------------------------------------------------------
+// ==================== DESAFIOS DE AUTENTICAÇÃO ====================
+const nonceStore = {};
 
-const txSessions = new Map();
+// Rota para gerar desafio
+app.post('/auth/challenge', async (req, res) => {
+  try {
+    const { username } = req.body;
+    if (!username) {
+      return res.status(400).json({ message: 'Username é obrigatório' });
+    }
 
-setInterval(() => {
-  const limite = Date.now() - 10 * 60 * 1000;
-  for (const [id, session] of txSessions) {
-    if (session.createdAt < limite) txSessions.delete(id);
+    const wallet = await Wallets.newFileSystemWallet(WALLET_PATH);
+    const identity = await wallet.get(username);
+    if (!identity) {
+      return res.status(404).json({ message: 'Usuário não registrado' });
+    }
+
+    const nonce = crypto.randomBytes(32).toString('hex');
+    nonceStore[username] = nonce;
+    res.json({ nonce });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
   }
-}, 60 * 1000);
-
-// ---------------------------------------------------------------------------
-// Paginas
-// ---------------------------------------------------------------------------
-
-app.get('/', (req, res) => {
-  res.sendFile(path.join(__dirname, 'views', 'index.html'));
 });
 
-app.get('/login', (req, res) => {
-  res.sendFile(path.join(__dirname, 'views', 'login.html'));
-});
+// Rota para verificar assinatura e retornar JWT
+app.post('/auth/login', async (req, res) => {
+  try {
+    const { username, nonce, signature } = req.body;
+    if (!username || !nonce || !signature) {
+      return res.status(400).json({ message: 'username, nonce e signature são obrigatórios' });
+    }
 
-app.get('/register', (req, res) => {
-  res.sendFile(path.join(__dirname, 'views', 'register.html'));
-});
+    if (!nonceStore[username] || nonceStore[username] !== nonce) {
+      return res.status(400).json({ message: 'Nonce inválido ou expirado' });
+    }
+    delete nonceStore[username];
 
-// ---------------------------------------------------------------------------
-// AUTENTICACAO
-// ---------------------------------------------------------------------------
+    const wallet = await Wallets.newFileSystemWallet(WALLET_PATH);
+    const identity = await wallet.get(username);
+    if (!identity) {
+      return res.status(404).json({ message: 'Usuário não encontrado' });
+    }
 
-app.post('/auth/register', async (req, res) => {
-  const { username, csr } = req.body;
+    const certPEM = identity.credentials.certificate;
+    const cert = KEYUTIL.getKey(certPEM);
+    const sig = new KJUR.crypto.Signature({ alg: 'SHA256withECDSA' });
+    sig.init(cert);
+    sig.updateString(nonce);
+    const isValid = sig.verify(b64tohex(signature));
 
-  if (!username || !csr) {
-    return res.status(400).json({ error: 'username e csr sao obrigatorios' });
+    if (!isValid) {
+      return res.status(401).json({ message: 'Assinatura inválida' });
+    }
+
+    const token = jwt.sign(
+      { sub: username, username },
+      JWT_SECRET,
+      { expiresIn: process.env.JWT_EXPIRES || '10h', algorithm: 'HS256' }
+    );
+
+    res.json({ token });
+  } catch (error) {
+    console.error('Erro no login:', error);
+    res.status(500).json({ message: error.message });
   }
+});
+
+function b64tohex(b64) {
+  return Buffer.from(b64, 'base64').toString('hex');
+}
+
+// ==================== REGISTRO DE USUÁRIO ====================
+const upload = multer({ storage: multer.memoryStorage() });
+
+app.post('/auth/register', upload.single('csr'), async (req, res) => {
+  const { username } = req.body;
+  if (!username) return res.status(400).json({ message: 'Username é obrigatório' });
+  if (!req.file) return res.status(400).json({ message: 'Arquivo CSR é obrigatório' });
 
   try {
-    await register(username, csr);
-    res.json({ message: `Usuario ${username} registrado com sucesso` });
+    const csrPEM = req.file.buffer.toString('utf8');
+    await register(username, csrPEM);
+    res.json({ message: `Usuário ${username} registrado com sucesso` });
   } catch (err) {
     console.error('Erro no registro:', err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ message: err.message });
   }
 });
 
-app.post('/auth/challenge', (req, res) => {
-  const { username } = req.body;
+// ==================== ROTAS PÚBLICAS ====================
+app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'views', 'index.html')));
+app.get('/login', (req, res) => res.sendFile(path.join(__dirname, 'views', 'login.html')));
+app.get('/register', (req, res) => res.sendFile(path.join(__dirname, 'views', 'register.html')));
 
-  if (!username) return res.status(400).json({ error: 'username e obrigatorio' });
-
-  const challenge = generateChallenge();
-  activeChallenges.set(username, challenge);
-
-  res.json({ nonce: challenge.nonce });
-});
-
-app.post('/auth/login', async (req, res) => {
-  const { username, signature } = req.body;
-
-  if (!username || !signature) {
-    return res.status(400).json({ error: 'username e signature sao obrigatorios' });
-  }
-
-  try {
-    const sigBuffer = Buffer.from(signature);
-    const { token } = await verifySignature(username, sigBuffer);
-    res.json({ token });
-  } catch (err) {
-    console.error('Erro no login:', err);
-    res.status(401).json({ error: err.message });
-  }
-});
-
-// ---------------------------------------------------------------------------
-// TRANSACOES COM ASSINATURA OFFLINE (fluxo original com chave do usuario)
-// ---------------------------------------------------------------------------
-
-async function handleTransaction(req, res) {
-  const { action, step, txId, chaincode, fcn, args, signature } = req.body;
-  const userId = req.user.sub;
-
-  try {
-    if (action === 'init') {
-      if (!chaincode || !fcn || !args) {
-        return res.status(400).json({ error: 'chaincode, fcn e args sao obrigatorios' });
-      }
-
-      const certificate = await getCertificateByUserId(userId);
-      initialize(userId, chaincode, certificate);
-
-      const proposalDigest = await createProposal(fcn, ...args);
-      const newTxId = crypto.randomUUID();
-      txSessions.set(newTxId, { createdAt: Date.now() });
-
-      return res.json({
-        txId:           newTxId,
-        step:           'proposal',
-        proposalDigest: proposalDigest.toString('base64')
-      });
-    }
-
-    if (!txId || !step || !signature) {
-      return res.status(400).json({ error: 'txId, step e signature sao obrigatorios' });
-    }
-
-    if (!txSessions.has(txId)) {
-      return res.status(400).json({ error: 'Sessao nao encontrada ou expirada' });
-    }
-
-    const sigDER = normalizeS(Buffer.from(signature));
-
-    if (step === 'proposal') {
-      const transactionDigest = await createTransaction(sigDER);
-      return res.json({
-        txId,
-        step:              'transaction',
-        transactionDigest: transactionDigest.toString('base64')
-      });
-    }
-
-    if (step === 'transaction') {
-      const commitDigest = await createCommit(sigDER);
-      return res.json({
-        txId,
-        step:         'commit',
-        commitDigest: commitDigest.toString('base64')
-      });
-    }
-
-    if (step === 'commit') {
-      const result = await finalize(sigDER);
-      txSessions.delete(txId);
-      close();
-      return res.json({ txId, step: 'done', ok: true, result: result ?? null });
-    }
-
-    return res.status(400).json({ error: `Step desconhecido: ${step}` });
-
-  } catch (err) {
-    console.error('Erro na transacao:', err);
-    txSessions.delete(txId);
-    try { close(); } catch {}
-    res.status(500).json({ error: err.message });
-  }
-}
-
-app.post('/transaction', authRequired, handleTransaction);
-app.post('/invoke',      authRequired, handleTransaction);
-app.post('/query',       authRequired, handleTransaction);
-
-// ---------------------------------------------------------------------------
-// TRANSACOES STANDALONE (fluxo sem chave do usuario, usa credenciais do peer)
-//
-// Endpoint unico: POST /transaction-standalone
-// Body: { chaincode: string, fcn: string, args: string[] }
-// Retorna: { ok: true, result: any }
-//
-// O mapeamento de funcoes do chaincode para metodos do standalone_client
-// e feito pelo map abaixo. Para adicionar novas funcoes, basta incluir
-// uma entrada: 'NomeFuncaoChaincode' -> (client, args) => client.metodo(...args)
-// ---------------------------------------------------------------------------
-
-const STANDALONE_FN_MAP = {
-  // sollytch-chain
-  // StoreTest args: [testID, jsonStr, predictStr] - standalone_client.storeTest(jsonStr) extrai test_id internamente
-  StoreTest:           (c, a) => c.storeTest(a[1]),
-  // UpdateTest args: [testID, jsonStr] - standalone_client.updateTest(jsonStr, testID)
-  UpdateTest:          (c, a) => c.updateTest(a[1], a[0]),
-  // StoreModel args: [modelKey, modelBase64] - standalone_client.storeModel(modelBase64, modelKey)
-  StoreModel:          (c, a) => c.storeModel(a[1], a[0]),
-  GetTestByID:         (c, a) => c.queryTestByID(a[0]),
-  GetTestsByLote:      (c, a) => c.queryTestByLote(a[0]),
-  StorePlanilha:       (c, a) => c.storePlanilha(a[0], a[1]),
-  GetPlanilhaByHash:   (c, a) => c.queryPlanilhaByHash(a[0]),
-  GetPlanilhasByLote:  (c, a) => c.queryPlanilhaByLote(a[0]),
-  // sollytch-image
-  StoreImage:          (c, a) => c.storeImage(a[1], a[0]),
-  GetImageByID:        (c, a) => c.queryImageByHash(a[0]),
-  GetImagesByKit:      (c, a) => c.queryImageByKit(a[0]),
-};
-
-app.post('/transaction-standalone', async (req, res) => {
-  const { chaincode, fcn, args } = req.body;
-
-  if (!chaincode || !fcn || !args) {
-    return res.status(400).json({ error: 'chaincode, fcn e args sao obrigatorios' });
-  }
-
-  const handler = STANDALONE_FN_MAP[fcn];
-  if (!handler) {
-    return res.status(400).json({ error: `Funcao nao mapeada para standalone: ${fcn}` });
-  }
+// ==================== TRANSACÕES SIMPLES (STANDALONE) ====================
+app.post('/store', authRequired, async (req, res) => {
+  const serverStart = Date.now();
+  const { key, value, signature, mode } = req.body;
+  if (!key || !value) return res.status(400).json({ error: 'key e value são obrigatórios' });
 
   try {
     await standaloneClient.initialize();
-    const result = await handler(standaloneClient, args);
+    let result;
+
+    if (mode === 'signed') {
+      if (!signature) return res.status(400).json({ error: 'signature é obrigatória no modo signed' });
+      result = await standaloneClient.storeSigned(key, value, signature);
+    } else {
+      result = await standaloneClient.store(key, value);
+    }
+
     await standaloneClient.disconnect();
 
-    res.json({ ok: true, result: result ?? null });
+    const serverEnd = Date.now();
+    const serverTotalMs = serverEnd - serverStart;
+    const chaincodeMs = result?.elapsed_ms || 0;
+    const backendOverheadMs = parseFloat((serverTotalMs - chaincodeMs).toFixed(4));
+
+    res.json({
+      ok: true,
+      elapsed_ms: chaincodeMs,
+      backend_overhead_ms: backendOverheadMs
+    });
   } catch (err) {
-    console.error('Erro no standalone:', err);
+    console.error('Erro em store:', err);
     try { await standaloneClient.disconnect(); } catch {}
     res.status(500).json({ error: err.message });
   }
 });
 
-// ---------------------------------------------------------------------------
-// HEALTH CHECK
-// ---------------------------------------------------------------------------
+// ==================== ARMAZENAR CHAVE PÚBLICA (ROTA ÚNICA) ====================
+app.post('/store-pubkey', authRequired, async (req, res) => {
+  const { pubKeyPEM } = req.body;
+  if (!pubKeyPEM) return res.status(400).json({ error: 'pubKeyPEM é obrigatória' });
 
-app.get('/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+  try {
+    await standaloneClient.initialize();
+    await standaloneClient.storeUserPubKey(pubKeyPEM);
+    await standaloneClient.disconnect();
+    res.json({ ok: true });
+  } catch (err) {
+    try { await standaloneClient.disconnect(); } catch {}
+    res.status(500).json({ error: err.message });
+  }
 });
 
-// ---------------------------------------------------------------------------
-// Inicializacao
-// ---------------------------------------------------------------------------
+// ==================== CONSULTA E VERIFICAÇÃO ====================
+app.post('/query', authRequired, async (req, res) => {
+  const { key } = req.body;
+  if (!key) return res.status(400).json({ error: 'key é obrigatória' });
 
+  try {
+    await standaloneClient.initialize();
+    const value = await standaloneClient.query(key);
+    await standaloneClient.disconnect();
+    res.json({ ok: true, value });
+  } catch (err) {
+    try { await standaloneClient.disconnect(); } catch {}
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/verify', authRequired, async (req, res) => {
+  const { message, signature } = req.body;
+  if (!message || !signature) return res.status(400).json({ error: 'message e signature são obrigatórios' });
+
+  try {
+    await standaloneClient.initialize();
+    const valid = await standaloneClient.verifySignature(message, signature);
+    await standaloneClient.disconnect();
+    res.json({ ok: true, valid });
+  } catch (err) {
+    try { await standaloneClient.disconnect(); } catch {}
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ==================== TRANSACÕES OFFLINE (ASSINATURA EXTERNA) ====================
+const txSessions = new Map();
+
+app.post('/transaction/offline/init', authRequired, async (req, res) => {
+  const { fcn, args } = req.body;
+  if (!fcn || !args || !Array.isArray(args)) {
+    return res.status(400).json({ error: 'fcn e args (array) são obrigatórios' });
+  }
+
+  try {
+    const username = req.user.sub || req.user.username;
+    const wallet = await Wallets.newFileSystemWallet(WALLET_PATH);
+    const identity = await wallet.get(username);
+    if (!identity) return res.status(404).json({ error: 'Usuário não encontrado na wallet' });
+
+    const certificate = identity.credentials.certificate;
+    initialize(username, CHAINCODE, certificate);
+
+    const proposalDigest = await createProposal(fcn, ...args);
+    const txId = crypto.randomUUID();
+    txSessions.set(txId, { createdAt: Date.now(), username });
+
+    return res.json({
+      txId,
+      step: 'proposal',
+      proposalDigest: proposalDigest.toString('base64')
+    });
+  } catch (err) {
+    console.error('Erro no init offline:', err);
+    try { close(); } catch {}
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/transaction/offline/sign-proposal', authRequired, async (req, res) => {
+  const { txId, proposalSig } = req.body;
+  if (!txId || !proposalSig) return res.status(400).json({ error: 'txId e proposalSig são obrigatórios' });
+
+  const session = txSessions.get(txId);
+  if (!session || session.username !== req.user.sub) {
+    return res.status(400).json({ error: 'Sessão inválida' });
+  }
+
+  try {
+    const sigDER = normalizeS(Buffer.from(proposalSig));
+    const transactionDigest = await createTransaction(sigDER);
+    return res.json({
+      txId,
+      step: 'transaction',
+      transactionDigest: transactionDigest.toString('base64')
+    });
+  } catch (err) {
+    console.error('Erro ao criar transação:', err);
+    try { close(); } catch {}
+    txSessions.delete(txId);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/transaction/offline/sign-transaction', authRequired, async (req, res) => {
+  const { txId, transactionSig } = req.body;
+  if (!txId || !transactionSig) return res.status(400).json({ error: 'txId e transactionSig são obrigatórios' });
+
+  const session = txSessions.get(txId);
+  if (!session || session.username !== req.user.sub) {
+    return res.status(400).json({ error: 'Sessão inválida' });
+  }
+
+  try {
+    const sigDER = normalizeS(Buffer.from(transactionSig));
+    const commitDigest = await createCommit(sigDER);
+    return res.json({
+      txId,
+      step: 'commit',
+      commitDigest: commitDigest.toString('base64')
+    });
+  } catch (err) {
+    console.error('Erro ao criar commit:', err);
+    try { close(); } catch {}
+    txSessions.delete(txId);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/transaction/offline/finalize', authRequired, async (req, res) => {
+  const serverStart = Date.now();
+  const { txId, commitSig } = req.body;
+  if (!txId || !commitSig) return res.status(400).json({ error: 'txId e commitSig são obrigatórios' });
+
+  const session = txSessions.get(txId);
+  if (!session || session.username !== req.user.sub) {
+    return res.status(400).json({ error: 'Sessão inválida' });
+  }
+
+  try {
+    const sigDER = normalizeS(Buffer.from(commitSig));
+    const result = await finalize(sigDER);
+    txSessions.delete(txId);
+    close();
+
+    const serverEnd = Date.now();
+    const serverTotalMs = serverEnd - serverStart;
+
+    // Extrai o tempo do chaincode do resultado (se existir)
+    let chaincodeMs = 0;
+    if (result && result.elapsed_ms) {
+      chaincodeMs = result.elapsed_ms;
+    } else if (result && result.result && result.result.elapsed_ms) {
+      chaincodeMs = result.result.elapsed_ms;
+    }
+
+    const backendOverheadMs = parseFloat((serverTotalMs - chaincodeMs).toFixed(4));
+
+    return res.json({
+      ok: true,
+      result: result ?? null,
+      elapsed_ms: chaincodeMs,
+      backend_overhead_ms: backendOverheadMs
+    });
+  } catch (err) {
+    console.error('Erro ao finalizar:', err);
+    try { close(); } catch {}
+    txSessions.delete(txId);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ==================== HEALTH CHECK ====================
+app.get('/health', (req, res) => res.json({ status: 'ok', timestamp: new Date().toISOString() }));
+
+// ==================== INICIALIZAÇÃO DO SERVIDOR ====================
 app.listen(PORT, () => {
   console.log(`Servidor rodando em http://localhost:${PORT}`);
 });

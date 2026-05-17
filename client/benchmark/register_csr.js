@@ -157,8 +157,4 @@ async function register(user, csrPEM) {
     }
 }
 
-const csrPEM = fs.readFileSync("user.csr","utf8")
-
-register("teste1", csrPEM)
-
 module.exports = register;

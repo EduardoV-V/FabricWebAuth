@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Registro - Sollytch</title>
+  <title>Registro - Chaincode de Teste</title>
   <style>
     :root {
       --primary: #1e7a35;
@@ -22,11 +22,11 @@
     }
     .form-container {
       background: var(--card);
-      padding: 20px;
+      padding: 30px;
       border-radius: 12px;
-      box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-      width: 90%;
-      max-width: 400px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+      width: 100%;
+      max-width: 420px;
       text-align: center;
     }
     .form-container h1 {
@@ -35,53 +35,43 @@
       color: var(--primary-dark);
     }
     .form-group {
-      margin-bottom: 15px;
+      margin-bottom: 16px;
       text-align: left;
     }
     .form-group label {
       display: block;
       margin-bottom: 5px;
       font-weight: bold;
+      font-size: 0.9rem;
     }
-    .form-group input {
-      width: 94%;
+    .form-group input[type="text"],
+    .form-group input[type="file"] {
+      width: 100%;
       padding: 10px;
       border: 1px solid #ccc;
       border-radius: 8px;
       font-size: 1rem;
-    }
-    .checkbox-group {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      margin-bottom: 10px;
-    }
-    .checkbox-group input {
-      width: auto;
-    }
-    .checkbox-group label {
-      margin: 0;
-      font-weight: normal;
-    }
-    .hidden {
-      display: none;
+      font-family: inherit;
     }
     .button-group {
-      display: flex;
-      justify-content: center;
+      margin-top: 20px;
     }
     .button-group button {
-      padding: 10px 20px;
+      width: 100%;
+      padding: 10px;
       border: none;
       background-color: var(--primary);
       color: white;
       border-radius: 8px;
       font-size: 1rem;
+      font-weight: bold;
       cursor: pointer;
+      transition: background 0.2s;
     }
     .button-group button:hover { background-color: var(--primary-dark); }
+    .button-group button:disabled { background: #aaa; cursor: not-allowed; }
     .links {
-      margin-top: 15px;
+      margin-top: 18px;
       font-size: 0.9rem;
     }
     .links a {
@@ -89,117 +79,118 @@
       text-decoration: none;
     }
     .links a:hover { text-decoration: underline; }
+    .error-message {
+      color: #c00;
+      font-size: 0.85rem;
+      margin-top: 6px;
+      display: none;
+    }
   </style>
 </head>
 <body>
   <div class="form-container">
-    <h1>Registrar Usuario</h1>
+    <h1>Registrar Usuário</h1>
 
     <div class="form-group">
-      <label for="username">Nome de Usuario</label>
-      <input type="text" id="username" placeholder="Digite seu username" required>
+      <label for="username">Nome de Usuário</label>
+      <input type="text" id="username" placeholder="Seu username" required>
     </div>
 
     <div class="form-group">
-      <label for="password">Senha</label>
-      <input type="password" id="password" placeholder="Digite sua senha" required>
-    </div>
-
-    <div class="checkbox-group">
-      <input type="checkbox" id="usePrivateKey">
-      <label for="usePrivateKey">Usar minha propria chave privada</label>
-    </div>
-
-    <div class="form-group hidden" id="privateKeyGroup">
-      <label for="privateKey">Chave Privada EC (.pem)</label>
-      <input type="file" id="privateKey" accept=".pem">
+      <label for="privateKeyFile">Chave Privada EC (.pem)</label>
+      <input type="file" id="privateKeyFile" accept=".pem" required>
     </div>
 
     <div class="button-group">
       <button id="registerBtn">Registrar</button>
     </div>
 
+    <div class="error-message" id="errorMessage"></div>
+
     <div class="links">
-      <p>Ja possui registro? <a href="/login">Faca login</a></p>
+      <p>Já possui registro? <a href="/login">Faça login</a></p>
     </div>
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/jsrsasign@10.5.25/lib/jsrsasign-all-min.js"></script>
   <script>
-    document.getElementById('usePrivateKey').addEventListener('change', function() {
-      const group = document.getElementById('privateKeyGroup');
-      if (this.checked) {
-        group.classList.remove('hidden');
-      } else {
-        group.classList.add('hidden');
-      }
-    });
-
-    function readFileAsText(file) {
-      return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = e => resolve(e.target.result);
-        reader.onerror = reject;
-        reader.readAsText(file);
-      });
-    }
+    // Organização fixa (pré‑definida)
+    const ORG = 'org1.example.com';
 
     document.getElementById('registerBtn').addEventListener('click', async () => {
       const username = document.getElementById('username').value.trim();
-      const password = document.getElementById('password').value;
-      const usePrivateKey = document.getElementById('usePrivateKey').checked;
-      const privateKeyFile = document.getElementById('privateKey').files[0];
+      const fileInput = document.getElementById('privateKeyFile');
+      const errorDiv = document.getElementById('errorMessage');
+      errorDiv.style.display = 'none';
 
-      if (!username || !password) {
-        alert('Preencha username e senha!');
+      if (!username) {
+        errorDiv.textContent = 'Informe o nome de usuário.';
+        errorDiv.style.display = 'block';
+        return;
+      }
+      if (!fileInput.files[0]) {
+        errorDiv.textContent = 'Selecione o arquivo da chave privada (.pem).';
+        errorDiv.style.display = 'block';
         return;
       }
 
-      if (password.length < 6) {
-        alert('Senha deve ter pelo menos 6 caracteres');
-        return;
-      }
-
-      if (usePrivateKey && !privateKeyFile) {
-        alert('Selecione a chave privada');
-        return;
-      }
+      const btn = document.getElementById('registerBtn');
+      btn.disabled = true;
+      btn.textContent = 'Gerando CSR e registrando...';
 
       try {
-        let privateKey = null;
-
-        if (usePrivateKey) {
-          privateKey = await readFileAsText(privateKeyFile);
-
-          if (!privateKey.includes('-----BEGIN PRIVATE KEY-----') &&
-              !privateKey.includes('-----BEGIN EC PRIVATE KEY-----')) {
-            throw new Error('Formato invalido. Use chave EC no formato PEM.');
-          }
-
-          const keyObj = KEYUTIL.getKey(privateKey);
-          if (keyObj.type !== 'EC' || keyObj.curveName !== 'secp256r1') {
-            throw new Error('A chave deve ser EC prime256v1 (secp256r1)');
-          }
+        const pem = await fileInput.files[0].text();
+        if (!pem.includes('PRIVATE KEY')) {
+          throw new Error('Arquivo não parece ser uma chave privada PEM.');
         }
 
+        // Converte PEM para objeto de chave privada
+        const prvKeyObj = KEYUTIL.getKey(pem);
+        if (prvKeyObj.type !== 'EC' || prvKeyObj.curveName !== 'secp256r1') {
+          throw new Error('A chave deve ser EC prime256v1 (secp256r1).');
+        }
+
+        // Obtém a chave pública correspondente
+        const pubKeyObj = KEYUTIL.getKey(prvKeyObj);
+
+        // Cria o CSR com organização fixa
+        const csr = new KJUR.asn1.csr.CertificationRequest({
+          subject: { str: `/CN=${username}/O=${ORG}` },
+          sbjpubkey: pubKeyObj,
+          sigalg: 'SHA256withECDSA',
+          sbjprvkey: prvKeyObj
+        });
+        const csrPEM = csr.getPEM();
+
+        // Cria um Blob para enviar como arquivo
+        const csrBlob = new Blob([csrPEM], { type: 'application/x-pem-file' });
+
+        // Prepara FormData
+        const formData = new FormData();
+        formData.append('username', username);
+        formData.append('csr', csrBlob, `${username}.csr`);
+
+        // Envia para o servidor
         const response = await fetch('/auth/register', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ username, password, privateKey })
+          body: formData
         });
 
         const data = await response.json();
 
         if (response.ok) {
-          alert('Usuario registrado com sucesso!');
+          alert('Usuário registrado com sucesso!');
           window.location.href = '/login';
         } else {
-          alert(data.error || 'Falha ao registrar usuario.');
+          throw new Error(data.message || 'Falha ao registrar usuário.');
         }
-
       } catch (error) {
         console.error('Erro no registro:', error);
-        alert('Falha: ' + error.message);
+        errorDiv.textContent = error.message;
+        errorDiv.style.display = 'block';
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Registrar';
       }
     });
   </script>

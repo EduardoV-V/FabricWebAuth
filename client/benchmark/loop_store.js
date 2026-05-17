@@ -119,13 +119,31 @@ function derToRaw(derSignature) {
 }
 
 function signDigest(digest, privateKey) {
-    const sign = crypto.createSign('SHA256');
-    sign.update(digest);
-    sign.end();
-    const derSignature = sign.sign(privateKey);
-    const rawSignature = derToRaw(derSignature);
-    const normalizedDER = normalizeS(rawSignature)
-    return normalizedDER;
+    // Exporta chave privada para PEM
+    const pem = privateKey.export({
+        type: 'pkcs8',
+        format: 'pem'
+    });
+
+    // Extrai bytes da chave privada do PEM
+    const base64 = pem
+        .replace(/-----BEGIN PRIVATE KEY-----/g, '')
+        .replace(/-----END PRIVATE KEY-----/g, '')
+        .replace(/\s+/g, '');
+
+    const der = Buffer.from(base64, 'base64');
+
+    // PKCS8 -> pegar últimos 32 bytes (private scalar da P256)
+    const rawPrivateKey = der.slice(-32);
+
+    // Assina usando noble-curves
+    const sig = p256.sign(digest, rawPrivateKey, {
+        lowS: true,
+        prehash: false
+    });
+
+    // Retorna RAW 64 bytes
+    return sig.toCompactRawBytes();
 }
 
 async function loadPrivateKey() {

@@ -14,7 +14,7 @@ fabricWebAuth.tar.gz
 package-lock.json
 client/uploads/
 client/benchmarks/tempos/*
-client/benchmarks/wallet
+client/benchmarks/wallet/
 client/wallet
 
 # Go dependencies - NUNCA versionar vendor

@@ -79,5 +79,5 @@ async function register(user) {
         process.exit(1);
     }
 }
-register('teste')
+register('teste1')
 module.exports = register;

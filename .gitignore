@@ -13,7 +13,7 @@ ccapi/vendor/*
 fabricWebAuth.tar.gz
 package-lock.json
 client/uploads/
-client/benchmarks/*
+client/benchmarks/tempos/*
 client/wallet
 
 # Go dependencies - NUNCA versionar vendor

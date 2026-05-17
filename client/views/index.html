@@ -95,11 +95,15 @@
 
   <hr>
 
-  <!-- Diagnóstico -->
+  <!-- Diagnóstico & Controle de Timing -->
   <div class="form-group">
     <h3>Diagnóstico</h3>
     <button onclick="viewStoredPublicKey()">Ver Chave Pública Armazenada</button>
     <button onclick="testSignature()" style="margin-left:10px">Testar Assinatura Atual</button>
+    <div style="margin-top:8px">
+      <button onclick="enableTiming()">Ativar Timing</button>
+      <button onclick="disableTiming()" style="margin-left:10px">Desativar Timing</button>
+    </div>
     <div id="diagnosticResult" class="result-box hidden"></div>
   </div>
 
@@ -164,6 +168,14 @@
 
   // ---------- Auth ----------
   function getToken() { return localStorage.getItem('token'); }
+  function getUsername() {
+    const token = getToken();
+    if (!token) return null;
+    try {
+      const payload = JSON.parse(atob(token.split('.')[1]));
+      return payload.sub || payload.username;
+    } catch { return null; }
+  }
   function checkAuth() {
     if (!getToken()) { alert('Você precisa estar logado.'); window.location.href = '/login'; return false; }
     return true;
@@ -173,12 +185,9 @@
     window.location.href = '/login';
   };
   (function showUser() {
-    const token = getToken();
-    if (!token) { window.location.href = '/login'; return; }
-    try {
-      const payload = JSON.parse(atob(token.split('.')[1]));
-      document.getElementById('userInfo').innerHTML = `Logado como: <b>${payload.username}</b>`;
-    } catch {}
+    const username = getUsername();
+    if (!username) { window.location.href = '/login'; return; }
+    document.getElementById('userInfo').innerHTML = `Logado como: <b>${username}</b>`;
   })();
 
   // ---------- Loading ----------
@@ -270,7 +279,8 @@
     setLoading(true);
     const resultDiv = document.getElementById('diagnosticResult');
     try {
-      const result = await fetchWithAuth('/query', { method: 'POST', body: JSON.stringify({ key: 'pubkey' }) });
+      const username = getUsername();
+      const result = await fetchWithAuth('/query', { method: 'POST', body: JSON.stringify({ key: `pubkey~${username}` }) });
       resultDiv.textContent = result.value || '(vazio)';
       resultDiv.classList.remove('hidden');
     } catch (err) {
@@ -299,9 +309,33 @@
     } finally { setLoading(false); }
   }
 
+  // ---------- Controle manual de timing ----------
+  async function enableTiming() {
+    try {
+      await fetchWithAuth('/benchmark/start', { method: 'POST' });
+      alert('Timing ativado. As próximas transações retornarão elapsed_ms.');
+    } catch (err) {
+      alert('Erro ao ativar timing: ' + err.message);
+    }
+  }
+
+  async function disableTiming() {
+    try {
+      await fetchWithAuth('/benchmark/stop', { method: 'POST' });
+      alert('Timing desativado.');
+    } catch (err) {
+      alert('Erro ao desativar timing: ' + err.message);
+    }
+  }
+
   // ---------- Execução principal ----------
   async function handleExecute() {
-    const mode = document.querySelector('input[name="mode"]:checked').value;
+    const modeInput = document.querySelector('input[name="mode"]:checked');
+    if (!modeInput) {
+        alert('Nenhum modo de operação selecionado. Recarregue a página.');
+        return;
+    }
+    const mode = modeInput.value;
     const keyBase = document.getElementById('storageKey').value.trim();
     const valueBase = document.getElementById('storageValue').value.trim();
     const loopEnabled = document.getElementById('loopEnabled').checked;
@@ -325,6 +359,7 @@
     try {
       if (loopEnabled && loopCount > 1) {
         // ============= MODO LOOP (BENCHMARK) =============
+        // NÃO chama /benchmark/start nem /stop – você ativou/desativou manualmente antes/depois.
         const allResults = [];
         let successes = 0, failures = 0;
 
@@ -334,7 +369,6 @@
 
           const iterStart = performance.now();
 
-          // Preparação local (não inclui latência de rede)
           let preparedData = null;
           try {
             if (mode === 'signed') {
@@ -372,17 +406,11 @@
 
               let digest = base64ToUint8Array(step1.proposalDigest);
               let signature = await signDigest(digest, privateKeyPem);
-              await fetchWithAuth('/transaction/offline/sign-proposal', {
-                method: 'POST',
-                body: JSON.stringify({ txId, proposalSig: Array.from(signature) })
-              });
-
-              digest = base64ToUint8Array(step2.transactionDigest); // passo 2 foi feito acima, mas precisamos da resposta
-              // Corrigindo: obtivemos step2, depois step3
               const step2 = await fetchWithAuth('/transaction/offline/sign-proposal', {
                 method: 'POST',
                 body: JSON.stringify({ txId, proposalSig: Array.from(signature) })
               });
+
               digest = base64ToUint8Array(step2.transactionDigest);
               signature = await signDigest(digest, privateKeyPem);
               const step3 = await fetchWithAuth('/transaction/offline/sign-transaction', {
@@ -426,7 +454,7 @@
           resultBox.textContent = 'Nenhuma iteração bem-sucedida.';
         }
       } else {
-        // ============= EXECUÇÃO ÚNICA (SEM MEDIÇÃO) =============
+        // ============= EXECUÇÃO ÚNICA =============
         const message = valueBase || `Teste único - ${Date.now()}`;
         let result;
         if (mode === 'unsigned') {
@@ -514,6 +542,8 @@
   window.viewStoredPublicKey = viewStoredPublicKey;
   window.testSignature = testSignature;
   window.handleExecute = handleExecute;
+  window.enableTiming = enableTiming;
+  window.disableTiming = disableTiming;
   window.clearResult = function () {
     document.getElementById('storeResult').classList.add('hidden');
     document.getElementById('csvDownloadArea').innerHTML = '';

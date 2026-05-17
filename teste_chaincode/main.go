@@ -21,36 +21,68 @@ type StoreResult struct {
 	ElapsedMs float64 `json:"elapsed_ms"`
 }
 
+// ---------------------------------------------------------------------------
+// Helpers de chave composta e timing
+// ---------------------------------------------------------------------------
+
+func pubKeyCompositeKey(ctx contractapi.TransactionContextInterface, username string) (string, error) {
+	return ctx.GetStub().CreateCompositeKey("pubkey", []string{username})
+}
+
+func timingEnabled(ctx contractapi.TransactionContextInterface) bool {
+	data, err := ctx.GetStub().GetState("timing_flag")
+	if err != nil || data == nil {
+		// por padrão, timing está ATIVADO
+		return true
+	}
+	return string(data) == "true"
+}
+
+// ===========================================================================
+// FUNÇÕES DO CHAINCODE
+// ===========================================================================
+
+// Store armazena um valor simples (sem verificação de assinatura).
 func (s *SmartContract) Store(ctx contractapi.TransactionContextInterface, key string, value string) (string, error) {
 	start := time.Now()
-	if key == "" {
-		return "", fmt.Errorf("key não pode ser vazia")
-	}
-	if value == "" {
-		return "", fmt.Errorf("value não pode ser vazio")
+	if key == "" || value == "" {
+		return "", fmt.Errorf("key e value são obrigatórios")
 	}
 	err := ctx.GetStub().PutState(key, []byte(value))
 	elapsed := time.Since(start).Seconds() * 1000
 	if err != nil {
 		return "", err
 	}
+	if !timingEnabled(ctx) {
+		return "{}", nil
+	}
 	res := StoreResult{ElapsedMs: elapsed}
 	resBytes, _ := json.Marshal(res)
 	return string(resBytes), nil
 }
 
-func (s *SmartContract) StoreSigned(ctx contractapi.TransactionContextInterface, key string, value string, signatureB64 string) (string, error) {
+// StoreSigned armazena um valor após verificar a assinatura ECDSA do valor,
+// utilizando a chave pública do usuário indicado.
+func (s *SmartContract) StoreSigned(ctx contractapi.TransactionContextInterface,
+	username, key, value, signatureB64 string) (string, error) {
 	start := time.Now()
-	if key == "" || value == "" || signatureB64 == "" {
-		return "", fmt.Errorf("key, value e signatureB64 são obrigatórios")
+	if username == "" || key == "" || value == "" || signatureB64 == "" {
+		return "", fmt.Errorf("username, key, value e signatureB64 são obrigatórios")
 	}
 
-	pubKeyPEM, err := ctx.GetStub().GetState("pubkey")
+	// Obtém a chave composta para a chave pública do usuário
+	pubKeyComposite, err := pubKeyCompositeKey(ctx, username)
+	if err != nil {
+		return "", fmt.Errorf("erro ao criar chave composta: %v", err)
+	}
+
+	// Busca a chave pública do usuário
+	pubKeyPEM, err := ctx.GetStub().GetState(pubKeyComposite)
 	if err != nil {
 		return "", fmt.Errorf("erro ao buscar chave pública: %v", err)
 	}
 	if pubKeyPEM == nil {
-		return "", fmt.Errorf("chave pública não encontrada. Use StoreUserPubKey primeiro")
+		return "", fmt.Errorf("chave pública de %s não encontrada. Use StoreUserPubKey primeiro", username)
 	}
 
 	block, _ := pem.Decode(pubKeyPEM)
@@ -74,9 +106,7 @@ func (s *SmartContract) StoreSigned(ctx contractapi.TransactionContextInterface,
 	}
 
 	hash := sha256.Sum256([]byte(value))
-
-	valid := ecdsa.VerifyASN1(ecPubKey, hash[:], signatureBytes)
-	if !valid {
+	if !ecdsa.VerifyASN1(ecPubKey, hash[:], signatureBytes) {
 		return "", fmt.Errorf("assinatura inválida")
 	}
 
@@ -85,16 +115,19 @@ func (s *SmartContract) StoreSigned(ctx contractapi.TransactionContextInterface,
 	if err != nil {
 		return "", err
 	}
+	if !timingEnabled(ctx) {
+		return "{}", nil
+	}
 	res := StoreResult{ElapsedMs: elapsed}
 	resBytes, _ := json.Marshal(res)
 	return string(resBytes), nil
 }
 
+// Query recupera um valor armazenado no ledger.
 func (s *SmartContract) Query(ctx contractapi.TransactionContextInterface, key string) (string, error) {
 	if key == "" {
 		return "", fmt.Errorf("key não pode ser vazia")
 	}
-
 	data, err := ctx.GetStub().GetState(key)
 	if err != nil {
 		return "", fmt.Errorf("erro ao acessar o ledger: %v", err)
@@ -102,13 +135,14 @@ func (s *SmartContract) Query(ctx contractapi.TransactionContextInterface, key s
 	if data == nil {
 		return "", fmt.Errorf("registro '%s' não encontrado", key)
 	}
-
 	return string(data), nil
 }
 
-func (s *SmartContract) StoreUserPubKey(ctx contractapi.TransactionContextInterface, pubKeyPEM string) error {
-	if pubKeyPEM == "" {
-		return fmt.Errorf("pubKeyPEM não pode ser vazio")
+// StoreUserPubKey armazena a chave pública de um determinado usuário.
+func (s *SmartContract) StoreUserPubKey(ctx contractapi.TransactionContextInterface,
+	username, pubKeyPEM string) error {
+	if username == "" || pubKeyPEM == "" {
+		return fmt.Errorf("username e pubKeyPEM são obrigatórios")
 	}
 
 	block, _ := pem.Decode([]byte(pubKeyPEM))
@@ -116,20 +150,32 @@ func (s *SmartContract) StoreUserPubKey(ctx contractapi.TransactionContextInterf
 		return fmt.Errorf("formato de chave pública inválido")
 	}
 
-	return ctx.GetStub().PutState("pubkey", []byte(pubKeyPEM))
+	key, err := pubKeyCompositeKey(ctx, username)
+	if err != nil {
+		return err
+	}
+	return ctx.GetStub().PutState(key, []byte(pubKeyPEM))
 }
 
-func (s *SmartContract) VerifySignature(ctx contractapi.TransactionContextInterface, message string, signatureB64 string) (bool, error) {
-	if message == "" || signatureB64 == "" {
-		return false, fmt.Errorf("message e signatureB64 são obrigatórios")
+// VerifySignature verifica se uma assinatura é válida para uma mensagem,
+// usando a chave pública do usuário indicado.
+func (s *SmartContract) VerifySignature(ctx contractapi.TransactionContextInterface,
+	username, message, signatureB64 string) (bool, error) {
+	if username == "" || message == "" || signatureB64 == "" {
+		return false, fmt.Errorf("username, message e signatureB64 são obrigatórios")
 	}
 
-	pubKeyPEM, err := ctx.GetStub().GetState("pubkey")
+	pubKeyComposite, err := pubKeyCompositeKey(ctx, username)
+	if err != nil {
+		return false, fmt.Errorf("erro ao criar chave composta: %v", err)
+	}
+
+	pubKeyPEM, err := ctx.GetStub().GetState(pubKeyComposite)
 	if err != nil {
 		return false, fmt.Errorf("erro ao buscar chave pública: %v", err)
 	}
 	if pubKeyPEM == nil {
-		return false, fmt.Errorf("chave pública não encontrada")
+		return false, fmt.Errorf("chave pública de %s não encontrada", username)
 	}
 
 	block, _ := pem.Decode(pubKeyPEM)
@@ -153,8 +199,17 @@ func (s *SmartContract) VerifySignature(ctx contractapi.TransactionContextInterf
 	}
 
 	hash := sha256.Sum256([]byte(message))
-	valid := ecdsa.VerifyASN1(ecPubKey, hash[:], signatureBytes)
-	return valid, nil
+	return ecdsa.VerifyASN1(ecPubKey, hash[:], signatureBytes), nil
+}
+
+// SetTiming ativa ou desativa a medição de tempo nas funções Store e StoreSigned.
+// Quando desativado, as funções retornam apenas "{}", permitindo múltiplos endorsers.
+func (s *SmartContract) SetTiming(ctx contractapi.TransactionContextInterface, enable bool) error {
+	val := "false"
+	if enable {
+		val = "true"
+	}
+	return ctx.GetStub().PutState("timing_flag", []byte(val))
 }
 
 func main() {

@@ -8,7 +8,6 @@ const path           = require('path');
 const crypto         = require('crypto');
 const jwt            = require('jsonwebtoken');
 const multer         = require('multer');
-const fs             = require('fs');
 const { KJUR, KEYUTIL } = require('jsrsasign');
 const { Wallets }    = require('fabric-network');
 
@@ -16,7 +15,6 @@ const { Wallets }    = require('fabric-network');
 const normalizeS       = require('./resources/normalization.js');
 const register         = require('./resources/register.js');
 const standaloneClient = require('./resources/standaloneClient.js');
-const { generateChallenge, verifySignature, activeChallenges } = require('./resources/verify.js');
 const {
   initialize,
   createProposal,
@@ -56,22 +54,17 @@ function authRequired(req, res, next) {
   }
 }
 
-// ==================== DESAFIOS DE AUTENTICAÇÃO ====================
+// ==================== AUTENTICAÇÃO ====================
 const nonceStore = {};
 
-// Rota para gerar desafio
 app.post('/auth/challenge', async (req, res) => {
   try {
     const { username } = req.body;
-    if (!username) {
-      return res.status(400).json({ message: 'Username é obrigatório' });
-    }
+    if (!username) return res.status(400).json({ message: 'Username é obrigatório' });
 
     const wallet = await Wallets.newFileSystemWallet(WALLET_PATH);
     const identity = await wallet.get(username);
-    if (!identity) {
-      return res.status(404).json({ message: 'Usuário não registrado' });
-    }
+    if (!identity) return res.status(404).json({ message: 'Usuário não registrado' });
 
     const nonce = crypto.randomBytes(32).toString('hex');
     nonceStore[username] = nonce;
@@ -81,7 +74,6 @@ app.post('/auth/challenge', async (req, res) => {
   }
 });
 
-// Rota para verificar assinatura e retornar JWT
 app.post('/auth/login', async (req, res) => {
   try {
     const { username, nonce, signature } = req.body;
@@ -96,9 +88,7 @@ app.post('/auth/login', async (req, res) => {
 
     const wallet = await Wallets.newFileSystemWallet(WALLET_PATH);
     const identity = await wallet.get(username);
-    if (!identity) {
-      return res.status(404).json({ message: 'Usuário não encontrado' });
-    }
+    if (!identity) return res.status(404).json({ message: 'Usuário não encontrado' });
 
     const certPEM = identity.credentials.certificate;
     const cert = KEYUTIL.getKey(certPEM);
@@ -107,16 +97,13 @@ app.post('/auth/login', async (req, res) => {
     sig.updateString(nonce);
     const isValid = sig.verify(b64tohex(signature));
 
-    if (!isValid) {
-      return res.status(401).json({ message: 'Assinatura inválida' });
-    }
+    if (!isValid) return res.status(401).json({ message: 'Assinatura inválida' });
 
     const token = jwt.sign(
       { sub: username, username },
       JWT_SECRET,
       { expiresIn: process.env.JWT_EXPIRES || '10h', algorithm: 'HS256' }
     );
-
     res.json({ token });
   } catch (error) {
     console.error('Erro no login:', error);
@@ -151,27 +138,53 @@ app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'views', 'index.htm
 app.get('/login', (req, res) => res.sendFile(path.join(__dirname, 'views', 'login.html')));
 app.get('/register', (req, res) => res.sendFile(path.join(__dirname, 'views', 'register.html')));
 
-// ==================== TRANSACÕES SIMPLES (STANDALONE) ====================
+// ==================== HELPER DE TIMING ====================
+async function setTimingHelper(enable) {
+  await standaloneClient.initialize();
+  await standaloneClient.setTiming(enable);
+  await standaloneClient.disconnect();
+}
+
+// ==================== BENCHMARK TIMING (manual) ====================
+app.post('/benchmark/start', authRequired, async (req, res) => {
+  try {
+    await setTimingHelper(true);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/benchmark/stop', authRequired, async (req, res) => {
+  try {
+    await setTimingHelper(false);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ==================== TRANSACÕES SIMPLES ====================
 app.post('/store', authRequired, async (req, res) => {
-  const serverStart = Date.now();
+  const serverStart = performance.now();   // <--- monotônico, nunca salta!
   const { key, value, signature, mode } = req.body;
+  const username = req.user.sub;
+
   if (!key || !value) return res.status(400).json({ error: 'key e value são obrigatórios' });
 
   try {
     await standaloneClient.initialize();
     let result;
-
     if (mode === 'signed') {
       if (!signature) return res.status(400).json({ error: 'signature é obrigatória no modo signed' });
-      result = await standaloneClient.storeSigned(key, value, signature);
+      result = await standaloneClient.storeSigned(username, key, value, signature);
     } else {
       result = await standaloneClient.store(key, value);
     }
-
     await standaloneClient.disconnect();
 
-    const serverEnd = Date.now();
-    const serverTotalMs = serverEnd - serverStart;
+    const serverEnd = performance.now();
+    const serverTotalMs = serverEnd - serverStart;      // sempre positivo e exato
     const chaincodeMs = result?.elapsed_ms || 0;
     const backendOverheadMs = parseFloat((serverTotalMs - chaincodeMs).toFixed(4));
 
@@ -187,14 +200,13 @@ app.post('/store', authRequired, async (req, res) => {
   }
 });
 
-// ==================== ARMAZENAR CHAVE PÚBLICA (ROTA ÚNICA) ====================
 app.post('/store-pubkey', authRequired, async (req, res) => {
   const { pubKeyPEM } = req.body;
+  const username = req.user.sub;
   if (!pubKeyPEM) return res.status(400).json({ error: 'pubKeyPEM é obrigatória' });
-
   try {
     await standaloneClient.initialize();
-    await standaloneClient.storeUserPubKey(pubKeyPEM);
+    await standaloneClient.storeUserPubKey(username, pubKeyPEM);
     await standaloneClient.disconnect();
     res.json({ ok: true });
   } catch (err) {
@@ -203,11 +215,9 @@ app.post('/store-pubkey', authRequired, async (req, res) => {
   }
 });
 
-// ==================== CONSULTA E VERIFICAÇÃO ====================
 app.post('/query', authRequired, async (req, res) => {
   const { key } = req.body;
   if (!key) return res.status(400).json({ error: 'key é obrigatória' });
-
   try {
     await standaloneClient.initialize();
     const value = await standaloneClient.query(key);
@@ -221,11 +231,11 @@ app.post('/query', authRequired, async (req, res) => {
 
 app.post('/verify', authRequired, async (req, res) => {
   const { message, signature } = req.body;
+  const username = req.user.sub;
   if (!message || !signature) return res.status(400).json({ error: 'message e signature são obrigatórios' });
-
   try {
     await standaloneClient.initialize();
-    const valid = await standaloneClient.verifySignature(message, signature);
+    const valid = await standaloneClient.verifySignature(username, message, signature);
     await standaloneClient.disconnect();
     res.json({ ok: true, valid });
   } catch (err) {
@@ -234,7 +244,7 @@ app.post('/verify', authRequired, async (req, res) => {
   }
 });
 
-// ==================== TRANSACÕES OFFLINE (ASSINATURA EXTERNA) ====================
+// ==================== TRANSACÕES OFFLINE ====================
 const txSessions = new Map();
 
 app.post('/transaction/offline/init', authRequired, async (req, res) => {
@@ -244,7 +254,7 @@ app.post('/transaction/offline/init', authRequired, async (req, res) => {
   }
 
   try {
-    const username = req.user.sub || req.user.username;
+    const username = req.user.sub;
     const wallet = await Wallets.newFileSystemWallet(WALLET_PATH);
     const identity = await wallet.get(username);
     if (!identity) return res.status(404).json({ error: 'Usuário não encontrado na wallet' });
@@ -319,7 +329,7 @@ app.post('/transaction/offline/sign-transaction', authRequired, async (req, res)
 });
 
 app.post('/transaction/offline/finalize', authRequired, async (req, res) => {
-  const serverStart = Date.now();
+  const serverStart = performance.now();   // monotônico
   const { txId, commitSig } = req.body;
   if (!txId || !commitSig) return res.status(400).json({ error: 'txId e commitSig são obrigatórios' });
 
@@ -334,10 +344,9 @@ app.post('/transaction/offline/finalize', authRequired, async (req, res) => {
     txSessions.delete(txId);
     close();
 
-    const serverEnd = Date.now();
+    const serverEnd = performance.now();
     const serverTotalMs = serverEnd - serverStart;
 
-    // Extrai o tempo do chaincode do resultado (se existir)
     let chaincodeMs = 0;
     if (result && result.elapsed_ms) {
       chaincodeMs = result.elapsed_ms;

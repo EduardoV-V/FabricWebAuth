@@ -105,8 +105,8 @@ async function store(key, value) {
     return JSON.parse(jsonStr);
 }
 
-async function storeSigned(key, value, signatureB64) {
-    const resultBytes = await contract.submitTransaction('StoreSigned', key, value, signatureB64);
+async function storeSigned(username, key, value, signatureB64) {
+    const resultBytes = await contract.submitTransaction('StoreSigned', username, key, value, signatureB64);
     const jsonStr = utf8Decoder.decode(resultBytes);
     return JSON.parse(jsonStr);
 }
@@ -116,13 +116,17 @@ async function query(key) {
     return utf8Decoder.decode(resultBytes);
 }
 
-async function storeUserPubKey(pubKeyPEM) {
-    await contract.submitTransaction('StoreUserPubKey', pubKeyPEM);
+async function storeUserPubKey(username, pubKeyPEM) {
+    await contract.submitTransaction('StoreUserPubKey', username, pubKeyPEM);
 }
 
-async function verifySignature(message, signatureB64) {
-    const resultBytes = await contract.evaluateTransaction('VerifySignature', message, signatureB64);
+async function verifySignature(username, message, signatureB64) {
+    const resultBytes = await contract.evaluateTransaction('VerifySignature', username, message, signatureB64);
     return utf8Decoder.decode(resultBytes) === 'true';
+}
+
+async function setTiming(enable) {
+    await contract.submitTransaction('SetTiming', enable ? 'true' : 'false');
 }
 
 module.exports = {
@@ -132,5 +136,6 @@ module.exports = {
     storeSigned,
     query,
     storeUserPubKey,
-    verifySignature
+    verifySignature,
+    setTiming
 };

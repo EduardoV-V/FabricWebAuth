@@ -84,7 +84,7 @@ async function createProposal(fcn, ...args) {
 	console.log("Proposta criada. Digest:\n", proposalDigest);
 	console.log("=================================================================================");
 
-	return proposalDigest;
+	return {proposalDigest: proposalDigest, txId: unsignedProposal.getTransactionId()};
 }
 
 /**

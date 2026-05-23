@@ -166,32 +166,36 @@ app.post('/benchmark/stop', authRequired, async (req, res) => {
 
 // ==================== TRANSACÕES SIMPLES ====================
 app.post('/store', authRequired, async (req, res) => {
-  const serverStart = performance.now();   // <--- monotônico, nunca salta!
   const { key, value, signature, mode } = req.body;
   const username = req.user.sub;
+  let serverTotalMs,serverEnd = 0;
 
   if (!key || !value) return res.status(400).json({ error: 'key e value são obrigatórios' });
 
   try {
+    const serverStart = performance.now();
     await standaloneClient.initialize();
+    
     let result;
     if (mode === 'signed') {
       if (!signature) return res.status(400).json({ error: 'signature é obrigatória no modo signed' });
+      serverEnd = performance.now();
+      serverTotalMs = serverEnd - serverStart;
       result = await standaloneClient.storeSigned(username, key, value, signature);
     } else {
+      serverEnd = performance.now();
+      serverTotalMs = serverEnd - serverStart;
       result = await standaloneClient.store(key, value);
     }
     await standaloneClient.disconnect();
 
-    const serverEnd = performance.now();
-    const serverTotalMs = serverEnd - serverStart;      // sempre positivo e exato
     const chaincodeMs = result?.elapsed_ms || 0;
-    const backendOverheadMs = parseFloat((serverTotalMs - chaincodeMs).toFixed(4));
+    // const backendOverheadMs = parseFloat((serverTotalMs - chaincodeMs).toFixed(4));
 
     res.json({
       ok: true,
       elapsed_ms: chaincodeMs,
-      backend_overhead_ms: backendOverheadMs
+      backend_overhead_ms: serverTotalMs
     });
   } catch (err) {
     console.error('Erro em store:', err);
@@ -254,6 +258,7 @@ app.post('/transaction/offline/init', authRequired, async (req, res) => {
   }
 
   try {
+    const stepStart = performance.now();
     const username = req.user.sub;
     const wallet = await Wallets.newFileSystemWallet(WALLET_PATH);
     const identity = await wallet.get(username);
@@ -261,15 +266,18 @@ app.post('/transaction/offline/init', authRequired, async (req, res) => {
 
     const certificate = identity.credentials.certificate;
     initialize(username, CHAINCODE, certificate);
-
+    
     const proposalDigest = await createProposal(fcn, ...args);
-    const txId = crypto.randomUUID();
-    txSessions.set(txId, { createdAt: Date.now(), username });
+    const elapsed = performance.now() - stepStart;
+    const txId = proposalDigest.txId;
+    console.log(elapsed)
+    txSessions.set(txId, { createdAt: Date.now(), username, elapsed});
 
     return res.json({
       txId,
       step: 'proposal',
-      proposalDigest: proposalDigest.toString('base64')
+      proposalDigest: proposalDigest.proposalDigest.toString('base64'),
+      elapsed
     });
   } catch (err) {
     console.error('Erro no init offline:', err);
@@ -281,7 +289,7 @@ app.post('/transaction/offline/init', authRequired, async (req, res) => {
 app.post('/transaction/offline/sign-proposal', authRequired, async (req, res) => {
   const { txId, proposalSig } = req.body;
   if (!txId || !proposalSig) return res.status(400).json({ error: 'txId e proposalSig são obrigatórios' });
-
+  const stepStart = performance.now();
   const session = txSessions.get(txId);
   if (!session || session.username !== req.user.sub) {
     return res.status(400).json({ error: 'Sessão inválida' });
@@ -289,11 +297,13 @@ app.post('/transaction/offline/sign-proposal', authRequired, async (req, res) =>
 
   try {
     const sigDER = normalizeS(Buffer.from(proposalSig));
+    session.elapsed += performance.now()-stepStart;
+    console.log(session.elapsed)
     const transactionDigest = await createTransaction(sigDER);
     return res.json({
       txId,
       step: 'transaction',
-      transactionDigest: transactionDigest.toString('base64')
+      transactionDigest: transactionDigest.toString('base64'),
     });
   } catch (err) {
     console.error('Erro ao criar transação:', err);
@@ -306,6 +316,7 @@ app.post('/transaction/offline/sign-proposal', authRequired, async (req, res) =>
 app.post('/transaction/offline/sign-transaction', authRequired, async (req, res) => {
   const { txId, transactionSig } = req.body;
   if (!txId || !transactionSig) return res.status(400).json({ error: 'txId e transactionSig são obrigatórios' });
+  const stepStart = performance.now();
 
   const session = txSessions.get(txId);
   if (!session || session.username !== req.user.sub) {
@@ -314,6 +325,8 @@ app.post('/transaction/offline/sign-transaction', authRequired, async (req, res)
 
   try {
     const sigDER = normalizeS(Buffer.from(transactionSig));
+    session.elapsed += performance.now()-stepStart;
+    console.log(session.elapsed)
     const commitDigest = await createCommit(sigDER);
     return res.json({
       txId,
@@ -329,9 +342,9 @@ app.post('/transaction/offline/sign-transaction', authRequired, async (req, res)
 });
 
 app.post('/transaction/offline/finalize', authRequired, async (req, res) => {
-  const serverStart = performance.now();   // monotônico
   const { txId, commitSig } = req.body;
   if (!txId || !commitSig) return res.status(400).json({ error: 'txId e commitSig são obrigatórios' });
+  const stepStart = performance.now()
 
   const session = txSessions.get(txId);
   if (!session || session.username !== req.user.sub) {
@@ -340,13 +353,13 @@ app.post('/transaction/offline/finalize', authRequired, async (req, res) => {
 
   try {
     const sigDER = normalizeS(Buffer.from(commitSig));
+    session.elapsed += performance.now()-stepStart
+    console.log(session.elapsed)
     const result = await finalize(sigDER);
     txSessions.delete(txId);
     close();
 
-    const serverEnd = performance.now();
-    const serverTotalMs = serverEnd - serverStart;
-
+    const serverTotalMs = parseFloat(session.elapsed.toFixed(3))
     let chaincodeMs = 0;
     if (result && result.elapsed_ms) {
       chaincodeMs = result.elapsed_ms;
@@ -354,13 +367,13 @@ app.post('/transaction/offline/finalize', authRequired, async (req, res) => {
       chaincodeMs = result.result.elapsed_ms;
     }
 
-    const backendOverheadMs = parseFloat((serverTotalMs - chaincodeMs).toFixed(4));
+    // const backendOverheadMs = parseFloat((serverTotalMs - chaincodeMs).toFixed(4));
 
     return res.json({
       ok: true,
       result: result ?? null,
       elapsed_ms: chaincodeMs,
-      backend_overhead_ms: backendOverheadMs
+      backend_overhead_ms: serverTotalMs
     });
   } catch (err) {
     console.error('Erro ao finalizar:', err);

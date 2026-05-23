@@ -355,17 +355,32 @@
     resultBox.classList.add('hidden');
     resultBox.textContent = '';
     csvArea.innerHTML = '';
+    
+    function pauseTimer() {
+      pauseStart = performance.now();
+    }
+
+    function resumeTimer() {
+      pausedMs += performance.now() - pauseStart;
+    }
+
+    function getElapsed(start) {
+      return performance.now() - start - pausedMs;
+    }
 
     try {
       if (loopEnabled && loopCount > 1) {
         // ============= MODO LOOP (BENCHMARK) =============
-        // NÃO chama /benchmark/start nem /stop – você ativou/desativou manualmente antes/depois.
         const allResults = [];
         let successes = 0, failures = 0;
 
         for (let i = 0; i < loopCount; i++) {
           const key = `${keyBase}_${i}`;
           const message = valueBase ? `${valueBase} #${i} - ${Date.now()}` : `Teste #${i} - ${Date.now()}`;
+
+          let pausedTime = 0;
+          let pauseStart = 0;
+          let frontendMs = 0;
 
           const iterStart = performance.now();
 
@@ -382,53 +397,71 @@
             continue;
           }
 
-          const frontendMs = parseFloat((performance.now() - iterStart).toFixed(6));
-
           try {
             let result;
             if (mode === 'unsigned') {
+              frontendMs = parseFloat((performance.now()-iterStart-pausedTime).toFixed(3));
               result = await fetchWithAuth('/store', {
                 method: 'POST',
                 body: JSON.stringify({ key, value: message, mode: 'unsigned' })
               });
             } else if (mode === 'signed') {
+              frontendMs = parseFloat((performance.now()-iterStart-pausedTime).toFixed(3));
               result = await fetchWithAuth('/store', {
                 method: 'POST',
                 body: JSON.stringify({ key, value: message, signature: preparedData.signatureB64, mode: 'signed' })
               });
             } else if (mode === 'offline') {
               const args = preparedData.args;
+
+              pauseStart = performance.now();
               const step1 = await fetchWithAuth('/transaction/offline/init', {
                 method: 'POST',
                 body: JSON.stringify({ fcn: 'Store', args })
               });
+
+              pausedTime += performance.now() - pauseStart;
+
               const { txId } = step1;
 
               let digest = base64ToUint8Array(step1.proposalDigest);
               let signature = await signDigest(digest, privateKeyPem);
+
+              pauseStart = performance.now();
+
               const step2 = await fetchWithAuth('/transaction/offline/sign-proposal', {
                 method: 'POST',
                 body: JSON.stringify({ txId, proposalSig: Array.from(signature) })
               });
+              pausedTime += performance.now() - pauseStart;
 
               digest = base64ToUint8Array(step2.transactionDigest);
               signature = await signDigest(digest, privateKeyPem);
+              
+              pauseStart = performance.now();
+
               const step3 = await fetchWithAuth('/transaction/offline/sign-transaction', {
                 method: 'POST',
                 body: JSON.stringify({ txId, transactionSig: Array.from(signature) })
               });
 
+              pausedTime += performance.now() - pauseStart;
+
               digest = base64ToUint8Array(step3.commitDigest);
               signature = await signDigest(digest, privateKeyPem);
+              
+              frontendMs = parseFloat((performance.now()-iterStart-pausedTime).toFixed(3));
               result = await fetchWithAuth('/transaction/offline/finalize', {
                 method: 'POST',
                 body: JSON.stringify({ txId, commitSig: Array.from(signature) })
               });
             }
+            
+
 
             const chaincodeMs = result?.elapsed_ms || 0;
             const backendMs = result?.backend_overhead_ms || 0;
-            const totalMs = parseFloat((frontendMs + backendMs + chaincodeMs).toFixed(6));
+            const totalMs = parseFloat((frontendMs + backendMs + chaincodeMs).toFixed(3));
             successes++;
             allResults.push({
               iteracao: i,

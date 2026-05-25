@@ -173,8 +173,8 @@ app.post('/store', authRequired, async (req, res) => {
   if (!key || !value) return res.status(400).json({ error: 'key e value são obrigatórios' });
 
   try {
-    const serverStart = performance.now();
     await standaloneClient.initialize();
+    const serverStart = performance.now();
     
     let result;
     if (mode === 'signed') {
@@ -265,10 +265,11 @@ app.post('/transaction/offline/init', authRequired, async (req, res) => {
     if (!identity) return res.status(404).json({ error: 'Usuário não encontrado na wallet' });
 
     const certificate = identity.credentials.certificate;
+    const elapsed = performance.now() - stepStart;
     initialize(username, CHAINCODE, certificate);
     
     const proposalDigest = await createProposal(fcn, ...args);
-    const elapsed = performance.now() - stepStart;
+    
     const txId = proposalDigest.txId;
     console.log(elapsed)
     txSessions.set(txId, { createdAt: Date.now(), username, elapsed});
